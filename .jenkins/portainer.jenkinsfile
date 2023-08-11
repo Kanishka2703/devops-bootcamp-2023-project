@@ -90,9 +90,35 @@ pipeline {
     stage('Git: Clone Code') {
       steps {
         container('maven') {
-          git branch: 'main', changelog: false, poll: false, 
+
+           // http://aada482ae939d430180f1feba4d11f49-899972468.us-west-2.elb.amazonaws.com/jenkins/env-vars.html/
+
+          echo "env.JOB_NAME: ${env.JOB_NAME}"
+          echo "env.BRANCH_NAME: ${env.BRANCH_NAME}" 
+          echo "env.GIT_BRANCH: ${env.GIT_BRANCH}"
+
+          sh """
+            echo "env.JOB_NAME: ${env.JOB_NAME}"
+            export GIT_BRANCH_SHORT=\$(echo ${env.GIT_BRANCH} | sed 's/origin\\///')
+
+            printenv
+          """
+
+          git branch: "main", 
+            changelog: false, poll: false, 
             credentialsId: 'jenkins',
             url: "${GITHUB_REPO_URL}"
+
+
+          // script {
+            // GIT_COMMIT_EMAIL = sh (
+            //       // script: 'git --no-pager show -s --format=\'%ae\'',
+            //       script: 'echo $env.GIT_BRANCH'
+            //       returnStdout: true
+            //   ).trim()
+            //   echo "Git committer email: ${GIT_COMMIT_EMAIL}"
+          // }            
+      
         }
       }
     }  
@@ -117,7 +143,6 @@ pipeline {
         }
       }
     }
-
 
     stage('AWS: Get ECR Token') {
       steps {
@@ -144,7 +169,7 @@ pipeline {
       }
     }
 
-     stage('EKS: Get Load Balancer Hostname') {
+    stage('EKS: Get Load Balancer Hostname') {
       steps {
         container('aws') {
           sh '''
@@ -162,69 +187,12 @@ pipeline {
       }
     }
 
-    stage('EKS: Deploy Hello-World using kubectl tool') {
-      steps {
-        container('aws') {
-          sh '''
-            export KUBECONFIG="$SHARED_DATA_PATH/kubeconfig"
-
-            kubectl get ns --kubeconfig $KUBECONFIG
-
-            K8S_DIR=".k8s/hello-world"
-
-            kubectl apply -f $K8S_DIR/0-namespace.yaml  --kubeconfig $KUBECONFIG
-
-            NAMESPACE="app"
-
-            kubectl apply -f $K8S_DIR/1-service.yaml    -n $NAMESPACE --kubeconfig $KUBECONFIG
-            kubectl apply -f $K8S_DIR/2-deployment.yaml -n $NAMESPACE --kubeconfig $KUBECONFIG
-            kubectl apply -f $K8S_DIR/3-hpa.yaml        -n $NAMESPACE --kubeconfig $KUBECONFIG
-            kubectl apply -f $K8S_DIR/4-ingress.yaml    -n $NAMESPACE --kubeconfig $KUBECONFIG
-
-            kubectl get all -n $NAMESPACE --kubeconfig $KUBECONFIG
-            
-          '''
-        }
+    stage('EKS: Deploy App to EKS using Helm') {
+      when {      
+          expression {
+              return env.JOB_NAME == 'tutim-ai-main';
+          }
       }
-    }
-
-    stage('EKS: Deploy Hello-World using Helm') {
-      steps {
-        container('aws') {
-          sh '''
-            export KUBECONFIG="$SHARED_DATA_PATH/kubeconfig"
-
-            NAMESPACE="hello-world"
-
-            echo ""
-            echo "Using Helm to install Hello-World to namespace '$NAMESPACE'"
-            echo "-----------------------------------------------------------"
-
-            RELEASE_NAME="hello-world"
-            CHART_NAME="hello-world"
-            CHART_REPO="./helm/hello-world"
-            VALUES_FILE="k8s-install-jenkins-helm-values.yaml"
-
-            echo ""
-            echo "Installing '$CHART_NAME' in namespace '$NAMESPACE' using helm"
-            echo "-----------------------------------------------------------"
-            helm upgrade $CHART_NAME $CHART_REPO \
-                --install \
-                --create-namespace \
-                --namespace $NAMESPACE \
-                --kubeconfig $KUBECONFIG \
-                --set ingress.hosts[0].paths[0].path=/helm-hello-world \
-                --set ingress.hosts[0].paths[0].pathType=Prefix \
-                --set ingress.hosts[0].host=$HOST_NAME \
-                --set deployment.replicas=3 
-            
-            kubectl get all -n $NAMESPACE --kubeconfig $KUBECONFIG
-          '''
-        }
-      }
-    }
-
-    stage('EKS: Deploy App ') {
       steps {
         container('aws') {
           sh '''
@@ -249,7 +217,18 @@ pipeline {
             FRONTEND_ENDPOINT="ai-frontend"
             FRONTEND_REPLICAS=3
 
-            TELEGRAM_BOT_TOKEN="6366730524:AAEjl6gBVjMT_ud_AIY5aq0HWw5a8j9A4DA"
+            case "$JOB_NAME" in 
+              'tutim-ai-main')
+                export TELEGRAM_BOT_TOKEN="6366730524:AAEjl6gBVjMT_ud_AIY5aq0HWw5a8j9A4DA"
+                ;;
+              'tutim-ai-dev')
+                export TELEGRAM_BOT_TOKEN="6338327189:AAG33JNgkI8NjSXaKcC4S7-TV0R3fNj1hho"
+                ;;
+              *)
+                echo "Unknown JOB_NAME: ${env.JOB_NAME}"
+                exit 1
+                ;;
+            esac
 
             SECRET_NAME="ecr-credentials"
             DOCKER_USERNAME="AWS"            
@@ -294,6 +273,11 @@ pipeline {
 
 
     stage('EKS: Deploy Portainer') {
+      when {      
+          expression {
+              return false;
+          }
+      }
       steps {
         container('aws') {
           sh '''
@@ -357,8 +341,8 @@ pipeline {
       }
       steps {
         script {
-        //   def services = ["frontend", "polybot", "yolo5", "chatgpt-telegram-bot", "tumblr"] 
-          def services = ["chatgpt-telegram-bot"] 
+          def services = ["frontend", "polybot", "yolo5", "chatgpt-telegram-bot", "tumblr"] 
+          // def services = ["chatgpt-telegram-bot"] 
           for (int i = 0; i < services.size(); i++) {
             stage("Build ${services[i]}") {
               container('dind') {
@@ -468,13 +452,14 @@ pipeline {
                     //   unzip awscliv2.zip && \
                     //   sudo ./aws/install
     stage ("SSH: Deploy Code to EC2 Inatance"){
-    //    when {
-    //     branch 'main-1'
-    //   }
-    // if docker version &> /dev/null; then
+      // when {      
+      //     expression {
+      //         return env.JOB_NAME == 'tutim-ai-dev';
+      //     }
+      // }
       steps{
         container('terraform') {
-          withCredentials([sshUserPrivateKey(credentialsId: "aws-ec2-keypair", keyFileVariable: 'CREDENTIALS_FILE')]) {
+          withCredentials([ sshUserPrivateKey(credentialsId: "aws-ec2-keypair", keyFileVariable: 'CREDENTIALS_FILE')]) {
                 sh '''
 
                     EC2_INSTANCE_PUBLIC_IP=$(cat $SHARED_DATA_PATH/$EC2_INSTANCES_PUBLIC_IP_ADDRESSES)  
